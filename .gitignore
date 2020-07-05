@@ -1,0 +1,9 @@
+# Don't check in user settings
+*.user
+# Ignore Visual Studio config files
+.vs/
+
+# And don't check in any builds
+Debug/
+Release/
+x64/
