@@ -1,5 +1,6 @@
 #include "framework.h"
 #include "RawInput.h"
+//#include "hidsdi.h"
 
 #define MAX_LOADSTRING 100
 
@@ -9,11 +10,18 @@ WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 HWND hWndMain;
 HWND hWndEdit;
+HWND hWndStartStop;
+BOOL bRunning;
+HBRUSH hEditBack;
 
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+void								Resize(HWND hwnd);
+void								StartStop();
+void								RegisterRawInput(BOOL bNewState);
+void								UpdateStartStopButton();
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
@@ -26,6 +34,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
 	LoadStringW(hInstance, IDC_RAWINPUT, szWindowClass, MAX_LOADSTRING);
 	MyRegisterClass(hInstance);
+
+	bRunning = FALSE;
 
 	if (!InitInstance(hInstance, nCmdShow))
 	{
@@ -68,23 +78,38 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 	return RegisterClassExW(&wcex);
 }
 
-void RegisterRawInput()
+void RegisterRawInput(BOOL bNewState)
 {
 	RAWINPUTDEVICE Rid[2];
 
-	Rid[1].usUsagePage = 0x01;
-	Rid[1].usUsage = 0x02;
-	Rid[1].dwFlags = RIDEV_NOLEGACY | RIDEV_INPUTSINK;   // adds HID mouse and also ignores legacy mouse messages
-	Rid[1].hwndTarget = hWndMain;
+	for (int i = 0; i < 2; i++)
+	{
+		Rid[i].usUsagePage = 0x01;
+		if (bNewState)
+		{
+			Rid[i].dwFlags = RIDEV_NOLEGACY | RIDEV_INPUTSINK;  
 
-	Rid[0].usUsagePage = 0x01;
-	Rid[0].usUsage = 0x06;
-	Rid[0].dwFlags = RIDEV_NOLEGACY | RIDEV_INPUTSINK;   // adds HID keyboard and also ignores legacy keyboard messages
-	Rid[0].hwndTarget = hWndMain;
+			Rid[i].hwndTarget = hWndMain;
+		}
+		else
+		{
+			Rid[i].dwFlags = RIDEV_REMOVE;
+			Rid[i].hwndTarget = NULL;
+		}
+
+	}
+	Rid[0].usUsage = 0x06; // adds HID keyboard and also ignores legacy mouse messages
+	Rid[1].usUsage = 0x02; // adds HID mouse and also ignores legacy mouse messages
 
 	if (RegisterRawInputDevices(Rid, 1, sizeof(Rid[0])) == FALSE) {
 		//registration failed. Call GetLastError for the cause of the error
 	}
+	else {
+		bRunning = bNewState;
+	}
+
+	UpdateStartStopButton();
+
 }
 
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
@@ -98,9 +123,14 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 		return FALSE;
 	}
 
+	hEditBack = CreateSolidBrush(RGB(255, 255, 255));
+
+	hWndStartStop = CreateWindowEx(WS_EX_CLIENTEDGE, _T("Button"), _T("Stop"),
+		WS_CHILD | WS_VISIBLE, 0, 0, 20, 60, hWndMain, NULL, NULL, NULL);
 	hWndEdit = CreateWindowEx(WS_EX_CLIENTEDGE, _T("Edit"), _T(""),
-		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_HSCROLL, 0, 0, 200,
+		WS_CHILD | WS_VISIBLE | ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_HSCROLL, 0, 20, 200,
 		200, hWndMain, NULL, NULL, NULL);
+
 	SendMessage(hWndEdit, EM_LIMITTEXT, 0x7FFFFFFE, 0);
 	HFONT hFont = CreateFont(
 		-MulDiv(10, GetDeviceCaps(GetDC(hWndEdit), LOGPIXELSY), 72), 
@@ -109,10 +139,12 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 		DEFAULT_PITCH | FF_DONTCARE, TEXT("Courier New"));
 	SendMessage(hWndEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
+	Resize(hWndMain);
+
 	ShowWindow(hWndMain, nCmdShow);
 	UpdateWindow(hWndMain);
-
-	RegisterRawInput();
+	
+	StartStop();
 
 	return TRUE;
 }
@@ -123,10 +155,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_SIZE:
 	{
-		RECT rt;
-		GetClientRect(hWnd, &rt);
-		MoveWindow(hWndEdit, rt.left, rt.top, rt.right - rt.left, rt.bottom - rt.top, TRUE);
+		Resize(hWnd);
 		break;
+	}
+	case WM_CTLCOLORSTATIC:
+	{
+		return (INT_PTR)hEditBack;
 	}
 	case WM_INPUT:
 	{
@@ -207,6 +241,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				szExtra = _T("Sys Dead");
 				break;
 			}
+			/*HIDD_ATTRIBUTES atr;
+			ZeroMemory(&atr, sizeof(atr));
+			atr.Size = sizeof(atr);
+			HidD_GetAttributes(raw->data.hid, &atr);*/
+
 			TCHAR szTempOutput[1000];
 			_stprintf_s(szTempOutput, _T("Kbd: Dev:%08p Make:%04x Flags:%04x Rsvd:%04x Extra:%08x Msg:%04x(%-8s) VK:%02x(%s)\n"),
 				raw->header.hDevice,
@@ -245,6 +284,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 	case WM_COMMAND:
 	{
+		int cmd = HIWORD(wParam);
+		switch (cmd)
+		{
+		case BN_CLICKED:
+			HWND hWndSource = (HWND)lParam;
+			if (hWndSource == hWndStartStop)
+			{
+				StartStop();
+			}
+
+			break;
+		}
+
 		int wmId = LOWORD(wParam);
 		// Parse the menu selections:
 		switch (wmId)
@@ -294,4 +346,38 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 		break;
 	}
 	return (INT_PTR)FALSE;
+}
+
+#define START_HEIGHT 25
+#define START_WIDTH 60
+#define START_VERT_MARGIN 5
+#define START_HORZ_MARGIN 5
+
+
+void Resize(HWND hWnd)
+{
+	RECT rt;
+	GetClientRect(hWnd, &rt);
+	MoveWindow(hWndStartStop, START_HORZ_MARGIN + rt.left, rt.top + START_VERT_MARGIN, START_WIDTH, START_HEIGHT, TRUE);
+
+	int topDist = START_HEIGHT + (START_VERT_MARGIN * 2);
+
+	MoveWindow(hWndEdit, rt.left, rt.top + topDist, rt.right - rt.left, rt.bottom - rt.top - topDist, TRUE);
+}
+
+void StartStop()
+{
+	RegisterRawInput(!bRunning);
+}
+
+void UpdateStartStopButton()
+{
+	if (bRunning)
+	{
+		SetWindowText(hWndStartStop, _T("Stop"));
+	}
+	else
+	{
+		SetWindowText(hWndStartStop, _T("Start"));
+	}
 }
