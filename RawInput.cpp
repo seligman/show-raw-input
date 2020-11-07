@@ -1,6 +1,7 @@
 #include "framework.h"
 #include "RawInput.h"
 //#include "hidsdi.h"
+#include <stdio.h>
 
 #define MAX_LOADSTRING 100
 
@@ -18,10 +19,11 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
-void								Resize(HWND hwnd);
-void								StartStop();
-void								RegisterRawInput(BOOL bNewState);
-void								UpdateStartStopButton();
+void				Resize(HWND hwnd);
+void				StartStop();
+void				RegisterRawInput(BOOL bNewState);
+void				UpdateStartStopButton();
+void				LogMessage(const TCHAR* msg);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
@@ -104,9 +106,17 @@ void RegisterRawInput(BOOL bNewState)
 		//registration failed. Call GetLastError for the cause of the error
 		MessageBox(NULL, _T("There was an error with registration"), _T("ERROR"), MB_ICONERROR);
 	}
-	else 
+	else
 	{
 		bRunning = bNewState;
+		if (bRunning)
+		{
+			LogMessage(_T("Starting logging\r\n"));
+		}
+		else
+		{
+			LogMessage(_T("Logging stopped\r\n"));
+		}
 	}
 
 	UpdateStartStopButton();
@@ -150,7 +160,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	return TRUE;
 }
 
-void LogMessage(TCHAR* msg)
+void LogMessage(const TCHAR* msg)
 {
 	int index = GetWindowTextLength(hWndEdit);
 	// Escape hatch for the input box getting too big
@@ -162,12 +172,27 @@ void LogMessage(TCHAR* msg)
 	SendMessage(hWndEdit, EM_REPLACESEL, 0, (LPARAM)msg);
 
 	char utf8[2000] = { 0 };
-	WideCharToMultiByte(CP_UTF8, 0, msg, (int)_tcslen(msg), utf8, (int)sizeof(utf8), NULL, NULL);
-	HANDLE hFile = CreateFile(_T("RawInput.log"), FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	SetFilePointer(hFile, 0, NULL, FILE_END);
-	DWORD wrote = 0;
-	WriteFile(hFile, utf8, (DWORD)(strlen(utf8)), &wrote, NULL);
-	CloseHandle(hFile);
+	int utf8Length = WideCharToMultiByte(CP_UTF8, 0, msg, (int)_tcslen(msg), utf8, (int)(sizeof(utf8)), NULL, NULL);
+
+	if (utf8Length > 0)
+	{
+		HANDLE hFile = CreateFile(_T("RawInput.log"), FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (hFile != NULL && hFile != INVALID_HANDLE_VALUE)
+		{
+			SYSTEMTIME st = { 0 };
+			GetSystemTime(&st);
+
+			char header[50] = { 0 };
+			sprintf_s(header, "%d-%02d-%02d %2d:%02d:%02d.%04d: ",
+				st.wYear, st.wMonth, st.wDay,
+				st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+
+			SetFilePointer(hFile, 0, NULL, FILE_END);
+			WriteFile(hFile, header, (DWORD)(strlen(header)), NULL, 0);
+			WriteFile(hFile, utf8, (DWORD)(strlen(utf8)), NULL, NULL);
+			CloseHandle(hFile);
+		}
+	}
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -263,8 +288,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 
 			TCHAR szTempOutput[1000];
-			_stprintf_s(szTempOutput, _T("Kbd: Dev:%08p Make:%04x Flags:%04x Rsvd:%04x Extra:%08x Msg:%04x(%-8s) VK:%02x(%s)\n"),
-				raw->header.hDevice,
+			_stprintf_s(szTempOutput, _T("Keybd: Dev:%08I64x Make:%04x Flags:%04x Rsvd:%04x Extra:%08x Msg:%04x(%-8s) VK:%02x(%s)\n"),
+				(UINT64)raw->header.hDevice,
 				raw->data.keyboard.MakeCode,
 				raw->data.keyboard.Flags,
 				raw->data.keyboard.Reserved,
@@ -281,7 +306,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if (raw->data.mouse.usButtonFlags > 0)
 			{
 				const TCHAR* szButtonInfo = _T("--");
-				switch (raw->data.mouse.ulButtons) 
+				switch (raw->data.mouse.ulButtons)
 				{
 				case RI_MOUSE_LEFT_BUTTON_DOWN:		szButtonInfo = _T("LButtonDown"); break;
 				case RI_MOUSE_LEFT_BUTTON_UP:		szButtonInfo = _T("LButtonUp"); break;
@@ -298,8 +323,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				}
 
 				TCHAR szTempOutput[1000];
-				_stprintf_s(szTempOutput, _T("Mouse: Dev:%08p usFlags=%04x ulButtons=%08x %-12s usButtonFlags=%04x usButtonData=%04x ulRawButtons=%04x lLastX=%04x lLastY=%04x ulExtraInformation=%04x\r\n"),
-					raw->header.hDevice,
+				_stprintf_s(szTempOutput, _T("Mouse: Dev:%08I64x Flags:%04x Buttons:%08x(%-12s) Flags:%04x Data:%04x Raw:%04x LastX:%04x LastY:%04x Extra:%04x\r\n"),
+					(UINT64)raw->header.hDevice,
 					raw->data.mouse.usFlags,
 					raw->data.mouse.ulButtons,
 					szButtonInfo,
