@@ -87,8 +87,7 @@ void RegisterRawInput(BOOL bNewState)
 		Rid[i].usUsagePage = 0x01;
 		if (bNewState)
 		{
-			Rid[i].dwFlags = RIDEV_NOLEGACY | RIDEV_INPUTSINK;  
-
+			Rid[i].dwFlags = /*RIDEV_NOLEGACY | */ RIDEV_INPUTSINK;
 			Rid[i].hwndTarget = hWndMain;
 		}
 		else
@@ -98,13 +97,15 @@ void RegisterRawInput(BOOL bNewState)
 		}
 
 	}
-	Rid[0].usUsage = 0x06; // adds HID keyboard and also ignores legacy mouse messages
-	Rid[1].usUsage = 0x02; // adds HID mouse and also ignores legacy mouse messages
+	Rid[0].usUsage = 0x06; // adds HID keyboard
+	Rid[1].usUsage = 0x02; // adds HID mouse
 
-	if (RegisterRawInputDevices(Rid, 1, sizeof(Rid[0])) == FALSE) {
+	if (RegisterRawInputDevices(Rid, 2, sizeof(Rid[0])) == FALSE) {
 		//registration failed. Call GetLastError for the cause of the error
+		MessageBox(NULL, _T("There was an error with registration"), _T("ERROR"), MB_ICONERROR);
 	}
-	else {
+	else 
+	{
 		bRunning = bNewState;
 	}
 
@@ -133,7 +134,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 	SendMessage(hWndEdit, EM_LIMITTEXT, 0x7FFFFFFE, 0);
 	HFONT hFont = CreateFont(
-		-MulDiv(10, GetDeviceCaps(GetDC(hWndEdit), LOGPIXELSY), 72), 
+		-MulDiv(10, GetDeviceCaps(GetDC(hWndEdit), LOGPIXELSY), 72),
 		0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, ANSI_CHARSET,
 		OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
 		DEFAULT_PITCH | FF_DONTCARE, TEXT("Courier New"));
@@ -143,10 +144,30 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 	ShowWindow(hWndMain, nCmdShow);
 	UpdateWindow(hWndMain);
-	
+
 	StartStop();
 
 	return TRUE;
+}
+
+void LogMessage(TCHAR* msg)
+{
+	int index = GetWindowTextLength(hWndEdit);
+	// Escape hatch for the input box getting too big
+	if (SendMessage(hWndEdit, WM_GETTEXTLENGTH, 0, 0) > 10 * 1024 * 1024)
+	{
+		SendMessage(hWndEdit, WM_SETTEXT, (WPARAM)0, (LPARAM)_T(""));
+	}
+	SendMessage(hWndEdit, EM_SETSEL, (WPARAM)index, (LPARAM)index);
+	SendMessage(hWndEdit, EM_REPLACESEL, 0, (LPARAM)msg);
+
+	char utf8[2000] = { 0 };
+	WideCharToMultiByte(CP_UTF8, 0, msg, (int)_tcslen(msg), utf8, (int)sizeof(utf8), NULL, NULL);
+	HANDLE hFile = CreateFile(_T("RawInput.log"), FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	SetFilePointer(hFile, 0, NULL, FILE_END);
+	DWORD wrote = 0;
+	WriteFile(hFile, utf8, (DWORD)(strlen(utf8)), &wrote, NULL);
+	CloseHandle(hFile);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -164,8 +185,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_INPUT:
 	{
-		UINT dwSize;
-
+		UINT dwSize = 0;
 		GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &dwSize,
 			sizeof(RAWINPUTHEADER));
 		LPBYTE lpb = new BYTE[dwSize];
@@ -241,10 +261,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				szExtra = _T("Sys Dead");
 				break;
 			}
-			/*HIDD_ATTRIBUTES atr;
-			ZeroMemory(&atr, sizeof(atr));
-			atr.Size = sizeof(atr);
-			HidD_GetAttributes(raw->data.hid, &atr);*/
 
 			TCHAR szTempOutput[1000];
 			_stprintf_s(szTempOutput, _T("Kbd: Dev:%08p Make:%04x Flags:%04x Rsvd:%04x Extra:%08x Msg:%04x(%-8s) VK:%02x(%s)\n"),
@@ -257,25 +273,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				szExtra,
 				raw->data.keyboard.VKey,
 				raw->data.keyboard.VKey < 256 ? szMap[raw->data.keyboard.VKey] : _T("--"));
-			int index = GetWindowTextLength(hWndEdit);
-			SendMessage(hWndEdit, EM_SETSEL, (WPARAM)index, (LPARAM)index);
-			SendMessage(hWndEdit, EM_REPLACESEL, 0, (LPARAM)szTempOutput);
+			LogMessage(szTempOutput);
 		}
 		else if (raw->header.dwType == RIM_TYPEMOUSE)
 		{
-			TCHAR szTempOutput[1000];
-			_stprintf_s(szTempOutput, _T("Mouse: usFlags=%04x ulButtons=%04x usButtonFlags=%04x usButtonData=%04x ulRawButtons=%04x lLastX=%04x lLastY=%04x ulExtraInformation=%04x\r\n"),
-				raw->data.mouse.usFlags,
-				raw->data.mouse.ulButtons,
-				raw->data.mouse.usButtonFlags,
-				raw->data.mouse.usButtonData,
-				raw->data.mouse.ulRawButtons,
-				raw->data.mouse.lLastX,
-				raw->data.mouse.lLastY,
-				raw->data.mouse.ulExtraInformation);
-			int index = GetWindowTextLength(hWndEdit);
-			SendMessage(hWndEdit, EM_SETSEL, (WPARAM)index, (LPARAM)index);
-			SendMessage(hWndEdit, EM_REPLACESEL, 0, (LPARAM)szTempOutput);
+			// Only log mouse button presses
+			if (raw->data.mouse.usButtonFlags > 0)
+			{
+				const TCHAR* szButtonInfo = _T("--");
+				switch (raw->data.mouse.ulButtons) 
+				{
+				case RI_MOUSE_LEFT_BUTTON_DOWN:		szButtonInfo = _T("LButtonDown"); break;
+				case RI_MOUSE_LEFT_BUTTON_UP:		szButtonInfo = _T("LButtonUp"); break;
+				case RI_MOUSE_MIDDLE_BUTTON_DOWN:	szButtonInfo = _T("MButtonDown"); break;
+				case RI_MOUSE_MIDDLE_BUTTON_UP:		szButtonInfo = _T("MButtonUp"); break;
+				case RI_MOUSE_RIGHT_BUTTON_DOWN:	szButtonInfo = _T("RButtonDown"); break;
+				case RI_MOUSE_RIGHT_BUTTON_UP:		szButtonInfo = _T("RButtonUp"); break;
+				case RI_MOUSE_BUTTON_4_DOWN:		szButtonInfo = _T("Button4Down"); break;
+				case RI_MOUSE_BUTTON_4_UP:			szButtonInfo = _T("Button4Up"); break;
+				case RI_MOUSE_BUTTON_5_DOWN:		szButtonInfo = _T("Button5Down"); break;
+				case RI_MOUSE_BUTTON_5_UP:			szButtonInfo = _T("Button5Up"); break;
+				case RI_MOUSE_WHEEL:				szButtonInfo = _T("Wheel"); break;
+				case RI_MOUSE_HWHEEL:				szButtonInfo = _T("HWhell"); break;
+				}
+
+				TCHAR szTempOutput[1000];
+				_stprintf_s(szTempOutput, _T("Mouse: Dev:%08p usFlags=%04x ulButtons=%08x %-12s usButtonFlags=%04x usButtonData=%04x ulRawButtons=%04x lLastX=%04x lLastY=%04x ulExtraInformation=%04x\r\n"),
+					raw->header.hDevice,
+					raw->data.mouse.usFlags,
+					raw->data.mouse.ulButtons,
+					szButtonInfo,
+					raw->data.mouse.usButtonFlags,
+					raw->data.mouse.usButtonData,
+					raw->data.mouse.ulRawButtons,
+					raw->data.mouse.lLastX,
+					raw->data.mouse.lLastY,
+					raw->data.mouse.ulExtraInformation);
+				LogMessage(szTempOutput);
+			}
 		}
 
 		delete[] lpb;
